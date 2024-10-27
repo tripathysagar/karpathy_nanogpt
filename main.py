@@ -3,11 +3,42 @@ import torch.nn as nn
 from torch.nn import functional as F
 import tiktoken
 
-from model import GPT
+from model import GPT, GPTConfig
 
 
 #---------------------------------
 
+class DataLoaderLite:
+     def __init__(self, B, T):
+          self.B,  self.T = B, T
+
+          enc = tiktoken.get_encoding("gpt2")
+
+          with open('input.txt', 'r') as file:
+               text = file.read()
+
+          self.tokens = torch.tensor(enc.encode(text))
+
+          print(f"loaded {len(self.tokens)} tokens")
+          print(f"1 epoch = {len(self.tokens) // (B * T)} batches")
+
+          self.current_position = 0
+
+     def next_batch(self):
+          B, T = self.B, self.T
+          
+          buf = self.tokens[self.current_position:self.current_position+B*T+1]
+
+          X = buf[:-1].view(B, T)
+          Y = buf[1:].view(B, T)
+
+          self.current_position += B*T
+
+          #for last batch tp resetto begining
+          if self.current_position + (B*T+1) > len(self.tokens):
+               self.current_position = 0
+
+          return X, Y
 
 if torch.cuda.is_available():
      device = "cuda"
@@ -19,13 +50,31 @@ else:
 num_return_seq = 5
 max_length = 30
 
-model = GPT.from_pretrained('gpt2')
+#model = GPT.from_pretrained('gpt2')
+model = GPT(GPTConfig())
 model.eval()
 model.to(device)
 
+dl = DataLoaderLite(4,32)
+
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+for i in range(50):
+
+     X, Y = dl.next_batch()
+     X, Y = X.to(device), Y.to(device)
+
+     optimizer.zero_grad()
+     logits, loss = model(X, Y)
+     print(f"iteration {i=} loss={loss.item()}")
+     loss.backward()
+     optimizer.step()
+
+
+import sys; sys.exit(0)
 
 enc = tiktoken.get_encoding("gpt2")
 promt = "Hello, I'm a language model,"
+
 @torch.no_grad()
 def generate( idx, max_new_tokens, temperature=1.0, top_k=None):
         """
@@ -59,4 +108,4 @@ def generate( idx, max_new_tokens, temperature=1.0, top_k=None):
         return [enc.decode(i) for i in op]
 #print(model(torch.tensor([enc.encode(promt)])))
 
-print(generate(torch.tensor([enc.encode(promt)] * 3), 30))
+#print(generate(torch.tensor([enc.encode(promt)] * 3), 30))

@@ -7,9 +7,9 @@ import math
 @dataclass
 class GPTConfig:
     block_size:int = 256
-    vocab_size: int = 65
+    vocab_size: int = 50257
     n_layer: int = 6
-    n_head: int = 5
+    n_head: int = 4 
     n_embd: int = 384
     bias: bool = False
     dropout: float = 0.0
@@ -120,6 +120,8 @@ class GPT(nn.Module):
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         
+        #weight sharing scheme
+        self.transformer.wte.weight = self.lm_head.weight 
 
 
     def forward(self, idx, target=None):
@@ -145,7 +147,7 @@ class GPT(nn.Module):
             loss = None
         else:
             logit = self.lm_head(x)
-            loss = F.cross_entropy(logit.view(b, -1), target=target)
+            loss =  F.cross_entropy(logit.view(-1, logit.shape[-1]), target.view(-1) )
 
         return logit, loss
 
