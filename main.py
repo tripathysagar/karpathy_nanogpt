@@ -51,7 +51,7 @@ else:
 
 warmup_iters = 10
 learning_rate = 6e-4
-min_lr = learning_rate * 10
+min_lr = learning_rate * 0.1
 max_steps = 50
 
 # learning rate decay scheduler (cosine with warmup)
@@ -68,7 +68,7 @@ def get_lr(it):
     coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff ranges 0..1
     return  + coeff * (learning_rate - min_lr)
 
-#torch.set_float32_matmul_precision('high')
+torch.set_float32_matmul_precision('high')
 
 #model = GPT.from_pretrained('gpt2')
 model = GPT(GPTConfig(vocab_size=50304))
@@ -77,32 +77,46 @@ model.train()
 model.to(device)
 model = torch.compile(model)
 
-dl = DataLoaderLite(4,1024)
+
+total_batch_size = 524288 # 2 ** 19 
+B = 4
+T = 1024
+assert total_batch_size % (B * T) == 0, f"make {total_batch_size=} divisible by {B=} * {T=}"
+grad_accum_steps = total_batch_size // ( B * T)
+print(f"total diserd batch size: {total_batch_size}")
+print(f"=> caluclated gradient accumulation steps: {grad_accum_steps}")
+
+dl = DataLoaderLite(B, T)
 
 
 #optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8)
-optimizer = model.configure_optimizers(weight_decay=0.1, lr=6e-4, betas=(0.9, 0.95), device_type=device)
+optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, betas=(0.9, 0.95), device_type=device)
 for step in range(50):
 
      lr = get_lr(step)
      for param_group in optimizer.param_groups:
         param_group['lr'] = lr
-        
-     t0 = time()
-     X, Y = dl.next_batch()
-     X, Y = X.to(device), Y.to(device)
 
      optimizer.zero_grad()
-     with torch.autocast(device_type=device, dtype=torch.bfloat16):
+
+     t0 = time()
+     loss_accum = 0.0
+     for micro_step in range(grad_accum_steps):
+          X, Y = dl.next_batch()
+          X, Y = X.to(device), Y.to(device)
+          #with torch.autocast(device_type=device, dtype=torch.bfloat16):
           logits, loss = model(X, Y)
-     loss.backward()
+          loss = loss / grad_accum_steps
+          loss_accum += loss.detach()
+          loss.backward()
+
      norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
      optimizer.step()
 
      torch.cuda.synchronize()
      td = (time() - t0) 
-     tokens_per_sec = (dl.B * dl.T) / td
-     print(f"iteration {step=} loss={loss.item()}, dt:{td * 1000:.2f}ms, norm:{norm:.4f} tokens_per_sec:{tokens_per_sec:.2f}")
+     tokens_per_sec = (dl.B * dl.T * grad_accum_steps) / td
+     print(f"iteration {step=} | loss={loss.item()} | dt:{td * 1000:.2f}ms | norm:{norm:.4f} | tokens_per_sec:{tokens_per_sec:.2f} | loss_acc : {loss_accum:.4f}")
 
 import sys; sys.exit(0)
 
