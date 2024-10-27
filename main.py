@@ -48,8 +48,7 @@ elif torch.backends.mps.is_available():
 else:
      device = 'cpu'
 
-num_return_seq = 5
-max_length = 30
+torch.set_float32_matmul_precision('high')
 
 #model = GPT.from_pretrained('gpt2')
 model = GPT(GPTConfig())
@@ -73,8 +72,9 @@ for i in range(50):
      optimizer.step()
 
      torch.cuda.synchronize()
-     t0 = (time() - t0) * 1000
-     print(f"iteration {i=} loss={loss.item()}, dt:{t0:.2f}ms")
+     td = (time() - t0) * 1000
+     tokens_per_sec = (dl.B * dl.T) / td
+     print(f"iteration {i=} loss={loss.item()}, dt:{tokens_per_sec:.2f}ms")
 
 import sys; sys.exit(0)
 
@@ -112,6 +112,8 @@ def generate( idx, max_new_tokens, temperature=1.0, top_k=None):
         op = op.tolist()
         
         return [enc.decode(i) for i in op]
+num_return_seq = 5
+max_length = 30
 #print(model(torch.tensor([enc.encode(promt)])))
 
 #print(generate(torch.tensor([enc.encode(promt)] * 3), 30))
