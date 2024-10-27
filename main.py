@@ -3,6 +3,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 import tiktoken
 from time import time
+import math
 
 from model import GPT, GPTConfig
 
@@ -48,10 +49,29 @@ elif torch.backends.mps.is_available():
 else:
      device = 'cpu'
 
+warmup_iters = 10
+learning_rate = 6e-4
+min_lr = learning_rate * 10
+max_steps = 50
+
+# learning rate decay scheduler (cosine with warmup)
+def get_lr(it):
+    # 1) linear warmup for warmup_iters steps
+    if it < warmup_iters:
+        return learning_rate * it / warmup_iters
+    # 2) if it > lr_decay_iters, return min learning rate
+    if it > max_steps:
+        return min_lr
+    # 3) in between, use cosine decay down to min learning rate
+    decay_ratio = (it - warmup_iters) / (max_steps - warmup_iters)
+    assert 0 <= decay_ratio <= 1
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff ranges 0..1
+    return  + coeff * (learning_rate - min_lr)
+
 #torch.set_float32_matmul_precision('high')
 
 #model = GPT.from_pretrained('gpt2')
-model = GPT(GPTConfig())
+model = GPT(GPTConfig(vocab_size=50304))
 #model.eval()
 model.train()
 model.to(device)
@@ -60,9 +80,14 @@ model = torch.compile(model)
 dl = DataLoaderLite(4,1024)
 
 
-optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
-for i in range(50):
+#optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8)
+optimizer = model.configure_optimizers(weight_decay=0.1, lr=6e-4, betas=(0.9, 0.95), device_type=device)
+for step in range(50):
 
+     lr = get_lr(step)
+     for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
+        
      t0 = time()
      X, Y = dl.next_batch()
      X, Y = X.to(device), Y.to(device)
@@ -71,12 +96,13 @@ for i in range(50):
      with torch.autocast(device_type=device, dtype=torch.bfloat16):
           logits, loss = model(X, Y)
      loss.backward()
+     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
      optimizer.step()
 
      torch.cuda.synchronize()
      td = (time() - t0) 
      tokens_per_sec = (dl.B * dl.T) / td
-     print(f"iteration {i=} loss={loss.item()}, dt:{td * 1000:.2f}ms, tokens_per_sec:{tokens_per_sec:.2f}")
+     print(f"iteration {step=} loss={loss.item()}, dt:{td * 1000:.2f}ms, norm:{norm:.4f} tokens_per_sec:{tokens_per_sec:.2f}")
 
 import sys; sys.exit(0)
 
