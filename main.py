@@ -55,8 +55,9 @@ model = GPT(GPTConfig())
 #model.eval()
 model.train()
 model.to(device)
+model = torch.compile(model)
 
-dl = DataLoaderLite(8,1024)
+dl = DataLoaderLite(4,1024)
 
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
