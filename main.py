@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 import tiktoken
+from time import time
 
 from model import GPT, GPTConfig
 
@@ -55,20 +56,25 @@ model = GPT(GPTConfig())
 model.eval()
 model.to(device)
 
-dl = DataLoaderLite(4,32)
+dl = DataLoaderLite(16,1024)
+
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 for i in range(50):
+
+     t0 = time()
 
      X, Y = dl.next_batch()
      X, Y = X.to(device), Y.to(device)
 
      optimizer.zero_grad()
      logits, loss = model(X, Y)
-     print(f"iteration {i=} loss={loss.item()}")
      loss.backward()
      optimizer.step()
 
+     torch.cuda.synchronize()
+     t0 = (time() - t0) * 1000
+     print(f"iteration {i=} loss={loss.item()}, dt:{to:.2f}ms")
 
 import sys; sys.exit(0)
 
