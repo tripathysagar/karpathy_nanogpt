@@ -6,11 +6,11 @@ import math
 
 @dataclass
 class GPTConfig:
-    block_size:int = 256
+    block_size:int = 1024
     vocab_size: int = 50257
-    n_layer: int = 6
-    n_head: int = 4 
-    n_embd: int = 384
+    n_layer: int = 12
+    n_head: int = 12
+    n_embd: int = 768
     bias: bool = True
     dropout: float = 0.0
 
@@ -145,7 +145,7 @@ class GPT(nn.Module):
         device = idx.device
         b, t = idx.size()
 
-        assert t < self.config.n_embd , f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
+        assert t <= self.config.block_size , f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
         pos = torch.arange(0, t, dtype=torch.long).to(device)
 
         tok_emb = self.transformer.wte(idx)

@@ -74,7 +74,7 @@ for i in range(50):
 
      torch.cuda.synchronize()
      t0 = (time() - t0) * 1000
-     print(f"iteration {i=} loss={loss.item()}, dt:{to:.2f}ms")
+     print(f"iteration {i=} loss={loss.item()}, dt:{t0:.2f}ms")
 
 import sys; sys.exit(0)
 
