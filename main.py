@@ -48,33 +48,34 @@ elif torch.backends.mps.is_available():
 else:
      device = 'cpu'
 
-torch.set_float32_matmul_precision('high')
+#torch.set_float32_matmul_precision('high')
 
 #model = GPT.from_pretrained('gpt2')
 model = GPT(GPTConfig())
-model.eval()
+#model.eval()
+model.train()
 model.to(device)
 
-dl = DataLoaderLite(16,1024)
+dl = DataLoaderLite(8,1024)
 
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 for i in range(50):
 
      t0 = time()
-
      X, Y = dl.next_batch()
      X, Y = X.to(device), Y.to(device)
 
      optimizer.zero_grad()
-     logits, loss = model(X, Y)
+     with torch.autocast(device_type=device, dtype=torch.bfloat16):
+          logits, loss = model(X, Y)
      loss.backward()
      optimizer.step()
 
      torch.cuda.synchronize()
-     td = (time() - t0) * 1000
+     td = (time() - t0) 
      tokens_per_sec = (dl.B * dl.T) / td
-     print(f"iteration {i=} loss={loss.item()}, dt:{tokens_per_sec:.2f}ms")
+     print(f"iteration {i=} loss={loss.item()}, dt:{td * 1000:.2f}ms, tokens_per_sec:{tokens_per_sec:.2f}")
 
 import sys; sys.exit(0)
 
