@@ -5,6 +5,9 @@ import tiktoken
 from time import time
 import math
 from contextlib import nullcontext
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.distributed import init_process_group, destroy_process_group
+import os
 
 from model import GPT, GPTConfig
 
@@ -57,12 +60,30 @@ def get_lr(it):
     coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff ranges 0..1
     return  + coeff * (learning_rate - min_lr)
 
-if torch.cuda.is_available():
-     device = "cuda"
-elif torch.backends.mps.is_available():
-     device = 'mps'
+
+ddp = int(os.environ.get('RANK', -1)) != -1 
+if ddp :
+     assert torch.cuda.is_available(), "could not run on cpu"
+     init_process_group(backend='nccl')
+
+     ddp_rank = int(os.environ['RANK'])
+     ddp_local_rank = int(os.environ['LOCAL_RANK'])
+     ddp_world_size = int(os.environ['WORLD_SIZE'])
+     device = f'cuda:{ddp_local_rank}'
+
+     torch.cuda.set_device(device=device)
+     master_process = ddp_rank == 0
 else:
+     ddp_rank = 0
+     ddp_local_rank = 0
+     ddp_world_size = 1
+     master_process =True
      device = 'cpu'
+     if torch.cuda.is_available():
+          device = "cuda"
+     elif torch.backends.mps.is_available():
+          device = 'mps'
+     
 
 dtype = 'float16'
 warmup_iters = 10
@@ -81,22 +102,29 @@ model = torch.compile(model)
 
 
 total_batch_size = 524288 # 2 ** 19 
-B = 8
+B = 16
 T = 1024
-assert total_batch_size % (B * T) == 0, f"make {total_batch_size=} divisible by {B=} * {T=}"
-grad_accum_steps = total_batch_size // ( B * T)
-print(f"total diserd batch size: {total_batch_size}")
-print(f"=> caluclated gradient accumulation steps: {grad_accum_steps}")
 
+assert total_batch_size % (B * T * ddp_world_size) == 0, f"make {total_batch_size=} divisible by {B=} * {T=} * {ddp_world_size=}"
+grad_accum_steps = total_batch_size // ( B * T * ddp_world_size)
+
+if master_process:
+     print(f"total diserd batch size: {total_batch_size}")
+     print(f"=> caluclated gradient accumulation steps: {grad_accum_steps}")
+
+
+print("i am gpu", ddp_rank)
+print("ta ta")
+import sys; sys.exit(0)
 dl = DataLoaderLite(B, T)
 
 
 #optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8)
 optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, betas=(0.9, 0.95), device_type=device)
 # initialize a GradScaler. If enabled=False scaler is a no-op
-scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
+scaler = torch.amp.GradScaler(device=device, enabled=(dtype == 'float16'))
 
-for step in range(10):
+for step in range(20):
 
      lr = get_lr(step)
      for param_group in optimizer.param_groups:
