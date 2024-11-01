@@ -103,7 +103,7 @@ model.to(device)
 model = torch.compile(model)
 
 total_batch_size = 524288 # 2 ** 19 
-B = 16
+B = 8
 T = 1024
 
 assert total_batch_size % (B * T * ddp_world_size) == 0, f"make {total_batch_size=} divisible by {B=} * {T=} * {ddp_world_size=}"
@@ -125,7 +125,7 @@ scaler = torch.amp.GradScaler(device=device, enabled=(dtype == 'float16'))
 if ddp :
      model = DDP(model, device_ids=[ddp_local_rank])
 
-for step in range(20):
+for step in range(50):
 
      lr = get_lr(step)
      for param_group in optimizer.param_groups:
