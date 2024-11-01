@@ -7,6 +7,7 @@ import math
 from contextlib import nullcontext
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
+import torch.distributed as dist
 import os
 
 from model import GPT, GPTConfig
@@ -15,8 +16,10 @@ from model import GPT, GPTConfig
 #---------------------------------
 
 class DataLoaderLite:
-     def __init__(self, B, T):
+     def __init__(self, B, T, process_rank, num_processes):
           self.B,  self.T = B, T
+          self.process_rank = process_rank
+          self.num_processes = num_processes
 
           enc = tiktoken.get_encoding("gpt2")
 
@@ -28,7 +31,7 @@ class DataLoaderLite:
           print(f"loaded {len(self.tokens)} tokens")
           print(f"1 epoch = {len(self.tokens) // (B * T)} batches")
 
-          self.current_position = 0
+          self.current_position = self.B * self.T * self.process_rank
 
      def next_batch(self):
           B, T = self.B, self.T
@@ -38,11 +41,11 @@ class DataLoaderLite:
           X = buf[:-1].view(B, T)
           Y = buf[1:].view(B, T)
 
-          self.current_position += B*T
+          self.current_position += B * T * self.num_processes
 
           #for last batch tp resetto begining
-          if self.current_position + (B*T+1) > len(self.tokens):
-               self.current_position = 0
+          if self.current_position + (B * T * self.num_processes + 1) > len(self.tokens):
+               self.current_position = self.B * self.T * self.process_rank
 
           return X, Y
 
@@ -96,10 +99,10 @@ ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torc
 ctx = torch.amp.autocast(device_type=device, dtype=ptdtype)  if device == 'cuda' else nullcontext()
 
 model = GPT(GPTConfig(vocab_size=50304))
-model.train()
 model.to(device)
 model = torch.compile(model)
-
+if ddp :
+     model = DDP(model, device_ids=[ddp_local_rank])
 
 total_batch_size = 524288 # 2 ** 19 
 B = 16
@@ -109,13 +112,11 @@ assert total_batch_size % (B * T * ddp_world_size) == 0, f"make {total_batch_siz
 grad_accum_steps = total_batch_size // ( B * T * ddp_world_size)
 
 if master_process:
-     print(f"total diserd batch size: {total_batch_size}")
+     print(f"total desird batch size: {total_batch_size}")
      print(f"=> caluclated gradient accumulation steps: {grad_accum_steps}")
 
 
-print("i am gpu", ddp_rank)
-print("ta ta")
-import sys; sys.exit(0)
+
 dl = DataLoaderLite(B, T)
 
 
@@ -139,7 +140,14 @@ for step in range(20):
                logits, loss = model(X, Y)
                loss = loss / grad_accum_steps
           loss_accum += loss.detach()
+
+          if ddp:
+            model.require_backward_grad_sync = (micro_step == grad_accum_steps - 1)
+
           scaler.scale(loss).backward()
+
+     if ddp:
+          dist.all_reduce(loss_accum, op=dist.ReduceOp.AVG)
 
      scaler.unscale_(optimizer)
      norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -156,8 +164,13 @@ for step in range(20):
           torch.mps.synchronize() 
 
      td = (time() - t0) 
-     tokens_per_sec = (dl.B * dl.T * grad_accum_steps) / td
-     print(f"iteration {step=} |  loss_acc : {loss_accum:.4f} | dt:{td * 1000:.2f}ms | norm:{norm:.4f} | tokens_per_sec:{tokens_per_sec:.2f} |")
+     tokens_per_sec = (dl.B * dl.T * grad_accum_steps * ddp_world_size) / td
+
+     if master_process:
+          print(f"iteration {step=} |  loss_acc : {loss_accum:.4f} | dt:{td * 1000:.2f}ms | norm:{norm:.4f} | tokens_per_sec:{tokens_per_sec:.2f} |")
+
+
+if ddp: destroy_process_group()
 
 import sys; sys.exit(0)
 
