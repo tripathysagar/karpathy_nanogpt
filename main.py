@@ -101,8 +101,6 @@ ctx = torch.amp.autocast(device_type=device, dtype=ptdtype)  if device == 'cuda'
 model = GPT(GPTConfig(vocab_size=50304))
 model.to(device)
 model = torch.compile(model)
-if ddp :
-     model = DDP(model, device_ids=[ddp_local_rank])
 
 total_batch_size = 524288 # 2 ** 19 
 B = 16
@@ -124,6 +122,8 @@ dl = DataLoaderLite(B, T, ddp_local_rank, ddp_world_size)
 optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, betas=(0.9, 0.95), device_type=device)
 # initialize a GradScaler. If enabled=False scaler is a no-op
 scaler = torch.amp.GradScaler(device=device, enabled=(dtype == 'float16'))
+if ddp :
+     model = DDP(model, device_ids=[ddp_local_rank])
 
 for step in range(20):
 
