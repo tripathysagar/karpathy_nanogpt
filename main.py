@@ -117,7 +117,7 @@ if master_process:
 
 
 
-dl = DataLoaderLite(B, T)
+dl = DataLoaderLite(B, T, ddp_local_rank, ddp_world_size)
 
 
 #optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8)
