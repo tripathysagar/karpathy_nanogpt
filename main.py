@@ -4,6 +4,7 @@ from torch.nn import functional as F
 import tiktoken
 from time import time
 import math
+from contextlib import nullcontext
 
 from model import GPT, GPTConfig
 
@@ -42,18 +43,6 @@ class DataLoaderLite:
 
           return X, Y
 
-if torch.cuda.is_available():
-     device = "cuda"
-elif torch.backends.mps.is_available():
-     device = 'mps'
-else:
-     device = 'cpu'
-
-warmup_iters = 10
-learning_rate = 6e-4
-min_lr = learning_rate * 0.1
-max_steps = 50
-
 # learning rate decay scheduler (cosine with warmup)
 def get_lr(it):
     # 1) linear warmup for warmup_iters steps
@@ -68,18 +57,31 @@ def get_lr(it):
     coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff ranges 0..1
     return  + coeff * (learning_rate - min_lr)
 
-torch.set_float32_matmul_precision('high')
+if torch.cuda.is_available():
+     device = "cuda"
+elif torch.backends.mps.is_available():
+     device = 'mps'
+else:
+     device = 'cpu'
 
-#model = GPT.from_pretrained('gpt2')
+dtype = 'float16'
+warmup_iters = 10
+learning_rate = 6e-4
+min_lr = learning_rate * 0.1
+max_steps = 5
+
+
+ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}[dtype]
+ctx = torch.amp.autocast(device_type=device, dtype=ptdtype)  if device == 'cuda' else nullcontext()
+
 model = GPT(GPTConfig(vocab_size=50304))
-#model.eval()
 model.train()
 model.to(device)
 model = torch.compile(model)
 
 
 total_batch_size = 524288 # 2 ** 19 
-B = 4
+B = 8
 T = 1024
 assert total_batch_size % (B * T) == 0, f"make {total_batch_size=} divisible by {B=} * {T=}"
 grad_accum_steps = total_batch_size // ( B * T)
@@ -91,32 +93,43 @@ dl = DataLoaderLite(B, T)
 
 #optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8)
 optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, betas=(0.9, 0.95), device_type=device)
-for step in range(50):
+# initialize a GradScaler. If enabled=False scaler is a no-op
+scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
+
+for step in range(10):
 
      lr = get_lr(step)
      for param_group in optimizer.param_groups:
         param_group['lr'] = lr
-
-     optimizer.zero_grad()
 
      t0 = time()
      loss_accum = 0.0
      for micro_step in range(grad_accum_steps):
           X, Y = dl.next_batch()
           X, Y = X.to(device), Y.to(device)
-          #with torch.autocast(device_type=device, dtype=torch.bfloat16):
-          logits, loss = model(X, Y)
-          loss = loss / grad_accum_steps
+          with ctx:
+               logits, loss = model(X, Y)
+               loss = loss / grad_accum_steps
           loss_accum += loss.detach()
-          loss.backward()
+          scaler.scale(loss).backward()
 
+     scaler.unscale_(optimizer)
      norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-     optimizer.step()
+     # step the optimizer and scaler if training in fp16
+     scaler.step(optimizer)
+     scaler.update()
 
-     torch.cuda.synchronize()
+     # flush the gradients as soon as we can, no need for this memory anymore
+     optimizer.zero_grad(set_to_none=True)
+
+     if device == 'cuda' : 
+          torch.cuda.synchronize() 
+     elif device == 'mps' :
+          torch.mps.synchronize() 
+
      td = (time() - t0) 
      tokens_per_sec = (dl.B * dl.T * grad_accum_steps) / td
-     print(f"iteration {step=} | loss={loss.item()} | dt:{td * 1000:.2f}ms | norm:{norm:.4f} | tokens_per_sec:{tokens_per_sec:.2f} | loss_acc : {loss_accum:.4f}")
+     print(f"iteration {step=} |  loss_acc : {loss_accum:.4f} | dt:{td * 1000:.2f}ms | norm:{norm:.4f} | tokens_per_sec:{tokens_per_sec:.2f} |")
 
 import sys; sys.exit(0)
 
